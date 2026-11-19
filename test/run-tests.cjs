@@ -210,6 +210,37 @@ async function waitUp() {
       record('12 malformed fail-closed', 'input missing most fields', 'REJECT / INVALID_TASK',
         `${r.json && r.json.decision}/${r.json && r.json.reason_code}`, pass);
     }
+
+    // 13 — taskId encoding (R06 post-mortem): a UUID task_id must encode as
+    // the UUID hex (dashes stripped) mod p in publicSignals[12] — the
+    // encoding the platform binds in competition mode. ASCII encoding fails
+    // competition verification (0/8 in R06) while passing practice.
+    {
+      const uuid = '616b2c2c-8485-4e44-93b2-baf14963be5b';
+      const expected = (BigInt('0x' + uuid.replaceAll('-', '')) % 21888242871839275222246405745257275088548364400416034343698204186575808495617n).toString();
+      const raw = JSON.stringify(task('practice_' + uuid, baseInput({ proof_tx: '0xuuid0001' })));
+      const r = await postRaw(raw);
+      const v = await verifyProof(r.json);
+      const sig12 = r.json && r.json.public_signals && r.json.public_signals[12];
+      const pass = r.status === 200 && r.json && r.json.decision === 'APPROVE' && v.ok && sig12 === expected;
+      record('13 taskId UUID-hex encoding', 'practice_<uuid> task_id',
+        `publicSignals[12] == uuid-hex ${expected.slice(0, 20)}... + proof verifies`,
+        `decision=${r.json && r.json.decision} sig12=${sig12} proofVerify=${v.ok}`, pass);
+    }
+
+    // 14 — Expiry boundary (circuit probe 2026-11-19): current_block ==
+    // expiry_block is EXPIRED (circuit refuses APPROVE witness at
+    // equality). Must answer REJECT / EXPIRED_CONDITION with a proof.
+    {
+      const raw = JSON.stringify(task('gk_test_expiry_boundary_1', baseInput({ current_block: 8430000, proof_tx: '0xexp00001' })));
+      const r = await postRaw(raw);
+      const v = await verifyProof(r.json);
+      const pass = r.status === 200 && r.json && r.json.decision === 'REJECT' && r.json.reason_code === 'EXPIRED_CONDITION'
+        && v.ok && verifyRespSig(r.body, r.sig);
+      record('14 expiry boundary current==expiry', 'current_block 8430000 == expiry_block 8430000',
+        'REJECT / EXPIRED_CONDITION + decision-0 proof verifies + signed',
+        `${r.json && r.json.decision}/${r.json && r.json.reason_code} proofVerify=${v.ok} ${v.why}`, pass);
+    }
   } catch (e) {
     console.error('test harness error:', e);
     console.error('server exitCode:', server.exitCode, 'signal:', server.signalCode);
